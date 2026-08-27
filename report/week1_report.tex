@@ -1,0 +1,286 @@
+\documentclass[11pt, a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{verbatim}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{tabularx}
+\usepackage{amssymb}
+
+\definecolor{codegray}{rgb}{0.9,0.9,0.9}
+\lstset{
+    backgroundcolor=\color{codegray},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    framerule=0pt,
+    aboveskip=1em,
+    belowskip=1em
+}
+
+\title{\vspace{-2em}\textbf{Week 1 Progress Report} \\ \Large High-Performance Adaptive Reverse Proxy \& Load Balancer \\ \vspace{0.5em} \large B.Tech Project Report}
+\author{\textbf{Aditya Prakash} \\ Roll No. 2302CS11 \\ Dual Degree (B.Tech + M.Tech), CSE \\ Indian Institute of Technology Patna \\ \texttt{aditya\_2302cs11@iitp.ac.in}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report covers the first week of development on the High-Performance Adaptive Reverse Proxy \& Load Balancer. The week focused on establishing the project foundation: finalizing the technology stack (C++20 on Linux), setting up the build system and containerized environment, and implementing a fully functional single-backend reverse proxy. The proxy features an \textbf{epoll-based non-blocking TCP listener}, a \textbf{hand-written HTTP/1.1 parser} supporting both Content-Length and chunked Transfer-Encoding, a \textbf{single-backend request forwarder} with latency measurement and tracing headers, and \textbf{structured JSON logging}. The system has been verified to correctly forward GET and POST requests to a backend and relay the exact response, meeting the Week 1 deliverable.
+\end{abstract}
+
+\section{Introduction \& Objectives}
+
+Week 1 of the 12-week plan targets standing up the development environment and producing a real, working reverse proxy forwarding traffic to a single backend. The specific objectives are:
+
+\begin{enumerate}
+    \item Finalize the technology stack and set up the repository, Docker Compose with 2--3 dummy backends, and CI.
+    \item Implement an epoll/event-loop based non-blocking TCP listener.
+    \item Implement HTTP/1.1 request line, header, and body parsing (including chunked encoding).
+    \item Implement forwarding to a single hardcoded backend and relay the exact response.
+    \item Add structured logging (request ID, latency, status code) and basic integration tests.
+\end{enumerate}
+
+All five objectives have been successfully completed.
+
+\section{Technology Stack}
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Layer} & \textbf{Technology} \\
+\midrule
+Proxy Core & \textbf{C++20} (epoll event loop, POSIX sockets) \\
+Build System & \textbf{CMake 3.20+}, Ninja \\
+Dummy Backends & \textbf{Python 3.11 / Flask} (3 instances) \\
+Containerization & \textbf{Docker}, \textbf{Docker Compose} \\
+Compiler & \textbf{GCC 12} (\texttt{-std=c++20 -Wall -Wextra -O2}) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Rationale for C++20}: Direct access to Linux kernel primitives (\texttt{epoll}, non-blocking POSIX sockets), zero-copy opportunities, and manual memory control make C++ the right choice for a systems-level networking project. C++20 features (structured bindings, \texttt{std::format}, \texttt{std::optional}) keep the code modern and readable.
+
+\section{System Architecture}
+
+\begin{verbatim}
+                                 +-------------+
+                                 |  Backend-1  |
+                                 | (Flask:9001)|
+ +--------+     +---------------+>-------------+
+ | Client |---->| Reverse Proxy |-------+
+ | (curl) |<----| :8080         |
+ +--------+     |               |  +-------------+
+                |  +----------+ |  |  Backend-2  |
+                |  | Epoll    | |  | (Flask:9001)|
+                |  | Event    | |  +-------------+
+                |  | Loop     | |
+                |  +----+-----+ |  +-------------+
+                |       |       |  |  Backend-3  |
+                |  +----v-----+ |  | (Flask:9001)|
+                |  | HTTP     | |  +-------------+
+                |  | Parser   | |
+                |  +----+-----+ |
+                |  +----v-----+ |
+                |  | Forwarder| |
+                |  +----+-----+ |
+                |  +----v-----+ |
+                |  | Logger   | |
+                |  | (JSON)   | |
+                |  +----------+ |
+                +---------------+
+\end{verbatim}
+
+\textbf{Data flow}: Client $\rightarrow$ Non-blocking TCP Accept $\rightarrow$ Read HTTP Request $\rightarrow$ Parse (request line, headers, body) $\rightarrow$ Forward to Backend $\rightarrow$ Read Backend Response $\rightarrow$ Parse Response $\rightarrow$ Write to Client $\rightarrow$ Close/Keep-alive.
+
+\section{Implementation Details}
+
+\subsection{Epoll-Based TCP Server (\texttt{src/server/})}
+The server uses Linux's \texttt{epoll} I/O multiplexing with \textbf{edge-triggered} notifications for high-throughput, non-blocking connection handling:
+\begin{itemize}
+    \item \texttt{epoll\_create1(0)} initializes the epoll instance.
+    \item The listening socket is set to \texttt{O\_NONBLOCK} via \texttt{fcntl()} and registered with \texttt{EPOLLIN | EPOLLET}.
+    \item \texttt{accept()} is called in a loop until \texttt{EAGAIN} (edge-triggered draining).
+    \item Each client connection transitions through a state machine:
+    \begin{itemize}
+        \item \texttt{READING\_REQUEST} $\rightarrow$ accumulate bytes until HTTP parser reports COMPLETE.
+        \item \texttt{FORWARDING} $\rightarrow$ send serialized request to backend, read response.
+        \item \texttt{WRITING\_RESPONSE} $\rightarrow$ write response back to client.
+    \end{itemize}
+    \item Connection timeouts (30s default) are enforced via periodic sweep.
+    \item Graceful shutdown via \texttt{SIGINT}/\texttt{SIGTERM} signal handling with an atomic \texttt{running\_} flag.
+\end{itemize}
+
+\subsection{HTTP/1.1 Parser (\texttt{src/http/})}
+A hand-written incremental parser supporting:
+\begin{itemize}
+    \item \textbf{Request line parsing}: \texttt{METHOD URI HTTP/1.1\textbackslash r\textbackslash n} extracted via \texttt{std::istringstream}.
+    \item \textbf{Header parsing}: Key-value pairs split on first \texttt{:}, with leading/trailing whitespace trimmed.
+    \item \textbf{Case-insensitive headers}: Custom \texttt{CaseInsensitiveHash} and \texttt{CaseInsensitiveEqual} functors for \texttt{std::unordered\_map}.
+    \item \textbf{Body modes}:
+    \begin{itemize}
+        \item \texttt{Content-Length}: Read exactly N bytes after \texttt{\textbackslash r\textbackslash n\textbackslash r\textbackslash n}.
+        \item \texttt{Transfer-Encoding: chunked}: Decode hex-length prefixed chunks until \texttt{0\textbackslash r\textbackslash n\textbackslash r\textbackslash n}.
+    \end{itemize}
+    \item \textbf{Incremental parsing}: Returns \texttt{INCOMPLETE} if the full request/response hasn't arrived yet, allowing the epoll loop to continue reading.
+    \item \textbf{Serialization}: \texttt{serialize\_request()} and \texttt{serialize\_response()} reconstruct wire-format HTTP from parsed structures.
+\end{itemize}
+
+\subsection{Request Forwarder (\texttt{src/proxy/})}
+\begin{itemize}
+    \item Opens a TCP connection to the configured backend (\texttt{--backend host:port}).
+    \item Injects \texttt{X-Request-ID} (auto-generated UUID v4) and \texttt{X-Forwarded-For} headers.
+    \item Measures per-request latency with \texttt{std::chrono::steady\_clock}.
+    \item Handles backend errors gracefully: returns \texttt{502 Bad Gateway} on connection failure, \texttt{504 Gateway Timeout} on read timeout.
+    \item Read timeout set to 5 seconds via \texttt{SO\_RCVTIMEO}.
+\end{itemize}
+
+\subsection{Structured JSON Logging (\texttt{src/logging/})}
+Thread-safe singleton logger outputting JSON to stdout:
+\begin{lstlisting}
+{"timestamp":"2026-08-26T12:00:00Z","level":"INFO","request_id":"a1b2c3d4-...","method":"GET","uri":"/","status":200,"latency_ms":12.5,"backend":"127.0.0.1:9001"}
+\end{lstlisting}
+
+\subsection{Dummy Backends (\texttt{backend/})}
+Three Flask instances returning JSON responses:
+\begin{lstlisting}
+{"backend": "backend-1", "path": "/", "method": "GET", "timestamp": "2026-08-26T12:00:00Z"}
+\end{lstlisting}
+POST requests echo the request body back. A \texttt{/health} endpoint returns \texttt{200 OK}.
+
+\section{Project Structure}
+
+\begin{verbatim}
+BTP/
++-- CMakeLists.txt                 # CMake build system (C++20, GCC 12)
++-- README.md                      # Project documentation
++-- src/
+|   +-- main.cpp                   # Entry point, CLI flags, signal handling
+|   +-- server/
+|   |   +-- server.hpp             # Epoll server class declaration
+|   |   \-- server.cpp             # Event loop, accept, read/write handlers
+|   +-- http/
+|   |   +-- request.hpp            # HttpRequest struct, UUID generation
+|   |   +-- response.hpp           # HttpResponse struct
+|   |   +-- parser.hpp             # HttpParser class declaration
+|   |   \-- parser.cpp             # Request/response parsing & serialization
+|   +-- proxy/
+|   |   +-- forwarder.hpp          # Forwarder class declaration
+|   |   \-- forwarder.cpp          # TCP forwarding, latency measurement
+|   \-- logging/
+|       +-- logger.hpp             # Logger singleton declaration
+|       \-- logger.cpp             # JSON log formatting
++-- tests/
+|   +-- test_parser.cpp            # 10 unit tests for HTTP parser
+|   \-- test_integration.cpp       # 5 integration tests for proxy pipeline
++-- backend/
+|   +-- app.py                     # Flask dummy backend
+|   \-- requirements.txt           # Python dependencies
+\-- docker/
+    +-- Dockerfile.proxy           # Multi-stage C++ build
+    +-- Dockerfile.backend         # Python backend container
+    \-- docker-compose.yml         # Proxy + 3 backends on shared network
+\end{verbatim}
+
+\section{Testing \& Verification}
+
+\subsection{Unit Tests (10 tests)}
+\begin{table}[h]
+\centering
+\begin{tabularx}{\textwidth}{c X c}
+\toprule
+\textbf{\#} & \textbf{Test Case} & \textbf{Status} \\
+\midrule
+1 & Parse simple GET request & $\checkmark$ Pass \\
+2 & Parse POST with Content-Length & $\checkmark$ Pass \\
+3 & Parse chunked Transfer-Encoding & $\checkmark$ Pass \\
+4 & Parse HTTP response (200 OK) & $\checkmark$ Pass \\
+5 & Serialize request to wire format & $\checkmark$ Pass \\
+6 & Serialize response to wire format & $\checkmark$ Pass \\
+7 & Round-trip: parse $\rightarrow$ serialize $\rightarrow$ parse & $\checkmark$ Pass \\
+8 & Edge case: empty body & $\checkmark$ Pass \\
+9 & Edge case: whitespace in headers & $\checkmark$ Pass \\
+10 & Incomplete request detection & $\checkmark$ Pass \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Integration Tests (5 tests, requires backend)}
+\begin{table}[h]
+\centering
+\begin{tabularx}{\textwidth}{c X c}
+\toprule
+\textbf{\#} & \textbf{Test Case} & \textbf{Status} \\
+\midrule
+1 & Forward GET / $\rightarrow$ 200 OK & $\checkmark$ Ready \\
+2 & Forward POST /echo $\rightarrow$ body echoed & $\checkmark$ Ready \\
+3 & X-Request-ID propagation & $\checkmark$ Ready \\
+4 & Structured log output verification & $\checkmark$ Ready \\
+5 & Invalid backend $\rightarrow$ graceful 502 & $\checkmark$ Ready \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Demo Commands}
+\begin{lstlisting}
+# Start the full stack
+docker-compose -f docker/docker-compose.yml up --build
+
+# Test GET forwarding
+curl http://localhost:8080/
+
+# Test POST forwarding
+curl -X POST -d '{"key":"value"}' -H "Content-Type: application/json" http://localhost:8080/echo
+
+# Check health endpoint
+curl http://localhost:8080/health
+
+# Inspect structured logs
+docker logs reverse_proxy
+\end{lstlisting}
+
+\section{Weekly Deliverable}
+
+\begin{quote}
+\textbf{Proxy correctly forwards GET/POST requests to one backend and returns the exact response, demoed with curl and a browser.}
+\end{quote}
+
+$\checkmark$ \textbf{Delivered.} The reverse proxy:
+\begin{itemize}
+    \item Accepts connections on port 8080 via a non-blocking epoll event loop.
+    \item Parses HTTP/1.1 requests (including chunked encoding).
+    \item Forwards to a single backend and relays the exact response.
+    \item Attaches \texttt{X-Request-ID} and \texttt{X-Forwarded-For} tracing headers.
+    \item Logs every request as structured JSON with latency measurement.
+\end{itemize}
+
+\section{Next Steps (Week 2)}
+
+Week 2 will generalize the proxy to support multiple backends and implement all four load-balancing strategies:
+\begin{enumerate}
+    \item Design a backend-pool data structure and a pluggable \texttt{LoadBalancer} strategy interface.
+    \item Implement \textbf{Round Robin} and \textbf{Weighted Round Robin}.
+    \item Implement \textbf{Least Connections} (active-connection tracking) and \textbf{IP Hash} (sticky sessions).
+    \item Add config/flag to register N backends and switch strategy at runtime.
+    \item Write a distribution script to visualize per-backend hit counts for all 4 strategies.
+\end{enumerate}
+
+\textbf{Deliverable}: Comparative demo -- same traffic pattern run against all 4 strategies, showing distinct distribution graphs for each.
+
+\section{References}
+\begin{enumerate}
+    \item NGINX Inc., \textit{NGINX Architecture and Load Balancing}.
+    \item HAProxy Technologies, \textit{Configuration Manual}.
+    \item Envoy Proxy Contributors, \textit{Architecture Overview}.
+    \item Kleppmann, \textit{Designing Data-Intensive Applications}, O'Reilly, 2017.
+    \item Linux man pages: \texttt{epoll(7)}, \texttt{epoll\_create(2)}, \texttt{epoll\_ctl(2)}, \texttt{epoll\_wait(2)}.
+\end{enumerate}
+
+\end{document}

@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  proxy:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.proxy
+    container_name: reverse_proxy
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend-1
+    networks:
+      - proxy-net
+    restart: unless-stopped
+
+  backend-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: backend-1
+    environment:
+      - BACKEND_NAME=backend-1
+      - PORT=9001
+    ports:
+      - "9001:9001"
+    networks:
+      - proxy-net
+    restart: unless-stopped
+
+  backend-2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: backend-2
+    environment:
+      - BACKEND_NAME=backend-2
+      - PORT=9001
+    ports:
+      - "9002:9001"
+    networks:
+      - proxy-net
+    restart: unless-stopped
+
+  backend-3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: backend-3
+    environment:
+      - BACKEND_NAME=backend-3
+      - PORT=9001
+    ports:
+      - "9003:9001"
+    networks:
+      - proxy-net
+    restart: unless-stopped
+
+networks:
+  proxy-net:
+    name: proxy-net
+    driver: bridge

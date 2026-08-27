@@ -1,0 +1,15 @@
+build/
+bin/
+out/
+.vscode/
+.idea/
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+__pycache__/
+*.pyc
+.env
+

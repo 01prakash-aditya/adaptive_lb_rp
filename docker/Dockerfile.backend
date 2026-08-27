@@ -1,0 +1,24 @@
+# ==============================================================================
+# Dockerfile for Dummy Backend Server (Flask)
+# ==============================================================================
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=9001 \
+    BACKEND_NAME=backend-unknown
+
+# Install dependencies
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application source
+COPY backend/app.py ./app.py
+
+# Expose backend port
+EXPOSE 9001
+
+# Run Flask backend server
+CMD ["python", "app.py"]
