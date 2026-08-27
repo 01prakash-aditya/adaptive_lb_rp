@@ -85,11 +85,12 @@ docker logs reverse_proxy
 ## Plan Ahead
 
 Further our development will generalize the proxy to support multiple backends and implement pluggable load-balancing algorithms:
--Backend Pool Data Structure
--**Round Robin** Load Balancing
--**Weighted Round Robin**
--**Least Connections** (active connection tracking)
--**IP Hash** (sticky sessions)
+
+- Backend Pool Data Structure
+- **Round Robin** Load Balancing
+- **Weighted Round Robin**
+- **Least Connections** (active connection tracking)
+- **IP Hash** (sticky sessions)
 
 ## License
 
