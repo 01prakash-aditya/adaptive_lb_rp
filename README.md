@@ -1,8 +1,8 @@
 # High-Performance Adaptive Reverse Proxy & Load Balancer
 
-A systems-level, high-performance reverse proxy and load balancer written from scratch in **C++20**. Designed for high throughput and low latency, this proxy utilizes Linux's `epoll` for non-blocking, event-driven I/O and features a custom-built HTTP/1.1 parser.
+A systems-level, high-performance reverse proxy and load balancer written from scratch in **C++20**. Designed for high throughput and low latency, this proxy utilizes Linux's `epoll` for non-blocking, event-driven I/O and features a custom-built HTTP/1.1 parser alongside advanced traffic management capabilities.
 
-## Architecture Flow
+## Architecture
 
 ```mermaid
 graph LR
@@ -11,86 +11,96 @@ graph LR
     subgraph High-Performance Proxy Core [C++20 / Linux]
         direction TB
         Epoll[Epoll Event Loop]
+        RateLimiter[Token Bucket Rate Limiter]
         Parser[Custom HTTP/1.1 Parser]
-        Forwarder[TCP Forwarder]
+        LB[Load Balancer]
+        Health[Active Health Checker]
+        Forwarder[TCP Forwarder & Conn Pool]
         Logger[Structured JSON Logger]
 
-        Epoll --> Parser
-        Parser --> Forwarder
+        Epoll --> RateLimiter
+        RateLimiter -->|Pass| Parser
+        Parser --> LB
+        LB --> Forwarder
         Forwarder --> Logger
+        Health -.->|Pings| LB
     end
 
-    Forwarder -->|TCP| B1(Flask Backend 1 :9001)
-    Forwarder -.->|Future| B2(Flask Backend 2 :9002)
-    Forwarder -.->|Future| B3(Flask Backend 3 :9003)
+    Forwarder -->|Keep-Alive| B1(Backend 1)
+    Forwarder -->|Keep-Alive| B2(Backend 2)
+    Forwarder -->|Keep-Alive| B3(Backend 3)
 ```
 
-## Current Features
+## Core Features
 
 * **Non-Blocking TCP Core**: Utilizes Linux `epoll` with edge-triggered notifications for highly efficient, asynchronous connection handling.
 * **Custom HTTP/1.1 Parser**: Incremental parsing supporting `Content-Length` and chunked `Transfer-Encoding` without relying on external HTTP libraries.
-* **Reliable Request Forwarding**: Routes traffic to backends, relays exact responses, and gracefully handles connection timeouts and failures (502/504).
-* **Observability**: Thread-safe structured JSON logging recording latency, HTTP methods, and status codes.
-* **Distributed Tracing Support**: Automatically injects `X-Request-ID` (UUIDv4) and `X-Forwarded-For` headers into relayed requests.
+* **Multi-Backend Load Balancing**: Pluggable strategies to route traffic:
+  * **Round Robin**: Evenly cycles requests.
+  * **Weighted Round Robin**: Adjusts traffic flow based on server capacity.
+  * **Least Connections**: Dynamically routes to the least busy server using atomic trackers.
+  * **IP Hash**: Ensures session stickiness by hashing the client's IP.
+* **Health Checking & Auto-Failover**:
+  * *Active Probing*: A background thread continually verifies backend availability.
+  * *Passive Monitoring*: Detects timeouts or refused connections in real-time.
+  * *Zero-Downtime Failover*: Unhealthy nodes are instantly removed from the routing pool.
+* **Traffic Control (Rate Limiting)**: Thread-safe Token Bucket implementation offering both **Global** throughput caps and strict **Per-IP** request limits (returns `429 Too Many Requests`).
+* **Connection Pooling**: Drastically reduces latency by caching and reusing idle Keep-Alive TCP sockets instead of initiating a 3-way handshake on every request.
+* **Observability**: Structured JSON logging recording latency, HTTP methods, and status codes. Injects `X-Request-ID` and `X-Forwarded-For`.
 
 ## Technology Stack
 
 | Component | Technology |
 | :--- | :--- |
 | **Proxy Core** | C++20 (POSIX sockets, `epoll`) |
-| **Compiler / Build** | GCC 12, CMake (3.20+), Ninja |
-| **Containerization** | Docker, Docker Compose (Multi-stage builds) |
+| **Compiler / Build** | GCC 12+, CMake (3.20+), Ninja |
+| **Containerization** | Docker, Docker Compose |
+| **Testing** | Python 3 (Requests, concurrent.futures) |
 | **Dummy Backends** | Python 3.11, Flask |
 
 ## Getting Started
 
-The entire environment (proxy + dummy backends) is containerized for easy testing. 
+The entire environment (proxy + 3 backend instances) is containerized for easy testing.
 
 ### 1. Start the Environment
 Spin up the reverse proxy and the backend instances on a shared Docker network:
 ```bash
-docker-compose -f docker/docker-compose.yml up --build
+docker compose -f docker/docker-compose.yml up --build -d
 ```
 
-### 2. Verify Traffic Forwarding
-Once running, the proxy listens on `localhost:8080`. You can test it using the following commands:
-
-**Standard GET Request:**
+### 2. Verify Traffic Routing (Distribution Test)
+The proxy listens on `localhost:8080`. You can automatically test the load balancing distribution using the provided Python script:
 ```bash
-curl http://localhost:8080/
+python scripts/test_distribution.py http://localhost:8080/
 ```
-*(Expected: 200 OK with a JSON response containing a timestamp from the backend).*
+*(Expected: Output demonstrating traffic evenly split ~33% across all three backend containers).*
 
-**POST Request (Body Echoing):**
+### 3. Test Failover & Recovery
+Monitor how the proxy handles a backend going down in real-time:
 ```bash
-curl -X POST -d '{"key":"value"}' -H "Content-Type: application/json" http://localhost:8080/echo
+python scripts/test_failover.py http://localhost:8080/
 ```
-*(Expected: The backend echoes the exact JSON body back to you).*
+While the script is running, open a new terminal and stop a backend (e.g., `docker stop btp-backend-2-1`). The script will log the failover recovery time.
 
-**Health Check Endpoint:**
+### 4. Test Rate Limiting
+Simulate a concurrent traffic burst to trigger the Token Bucket rate limiter:
 ```bash
-curl http://localhost:8080/health
+python scripts/test_rate_limit.py http://localhost:8080/
 ```
+*(Expected: A mix of `200 OK` and `429 Too Many Requests` depending on the burst size).*
 
-### 3. Inspect Observability Logs
-The proxy emits structured JSON logs. Open a new terminal and run:
+### 5. Inspect Observability Logs
+The proxy emits structured JSON logs. View them with:
 ```bash
-docker logs reverse_proxy
-```
-*Example Log Output:*
-```json
-{"timestamp":"2026-08-26T12:00:00Z", "level":"INFO", "request_id":"a1b2c3d4-...", "method":"GET", "uri":"/", "status":200, "latency_ms":12.5, "backend":"127.0.0.1:9001"}
+docker compose -f docker/docker-compose.yml logs --tail 50 proxy
 ```
 
-## Roadmap (Upcoming Features)
+## Upcoming Features (Next Phase)
 
-Phase 2 of development will generalize the proxy to support multiple backends and implement pluggable load-balancing algorithms:
-- [ ] Backend Pool Data Structure
-- [ ] **Round Robin** Load Balancing
-- [ ] **Weighted Round Robin**
-- [ ] **Least Connections** (active connection tracking)
-- [ ] **IP Hash** (sticky sessions)
+- [ ] **In-Memory Caching**: LRU Cache layer to intercept repeated identical requests.
+- [ ] Cache invalidation and TTL tracking.
+- [ ] Adaptive Load Balancing: Real-time feedback loops based on latency metrics.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License.
