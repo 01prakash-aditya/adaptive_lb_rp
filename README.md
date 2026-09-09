@@ -1,4 +1,7 @@
 # High-Performance Adaptive Reverse Proxy & Load Balancer
+# Adaptive Load Balancer
+
+[![License: MIT](https://img.shields.io/github/license/01prakash-aditya/adaptive_lb_rp)](https://github.com/01prakash-aditya/adaptive_lb_rp/blob/main/LICENSE)
 
 A systems-level, high-performance reverse proxy and load balancer written from scratch in **C++20**. Designed for high throughput and low latency, this proxy utilizes Linux's `epoll` for non-blocking, event-driven I/O and features a custom-built HTTP/1.1 parser alongside advanced traffic management capabilities.
 
