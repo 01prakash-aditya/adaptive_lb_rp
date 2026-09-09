@@ -97,7 +97,7 @@ The proxy emits structured JSON logs. View them with:
 docker compose -f docker/docker-compose.yml logs --tail 50 proxy
 ```
 
-## Upcoming Features (Next Phase)
+## Further ideas:
 
 - [ ] **In-Memory Caching**: LRU Cache layer to intercept repeated identical requests.
 - [ ] Cache invalidation and TTL tracking.
