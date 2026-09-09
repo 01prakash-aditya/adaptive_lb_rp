@@ -1,5 +1,4 @@
 # High-Performance Adaptive Reverse Proxy & Load Balancer
-# Adaptive Load Balancer
 
 [![License: MIT](https://img.shields.io/github/license/01prakash-aditya/adaptive_lb_rp)](https://github.com/01prakash-aditya/adaptive_lb_rp/blob/main/LICENSE)
 
