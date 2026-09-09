@@ -4,13 +4,21 @@
 #include <memory>
 #include <atomic>
 #include <chrono>
+#include <vector>
 #include "../proxy/forwarder.hpp"
+#include "../lb/backend.hpp"
+#include "../lb/strategies.hpp"
+#include "../lb/health_checker.hpp"
+#include "../ratelimit/rate_limiter.hpp"
 
 namespace proxy::server {
 
 class Server {
 public:
-    Server(uint16_t port, const std::string& backend_addr);
+    Server(uint16_t port, 
+           std::vector<std::shared_ptr<lb::Backend>> backends,
+           const std::string& strategy_name,
+           double rate_limit_rps = 1000.0);
     ~Server();
 
     Server(const Server&) = delete;
@@ -21,8 +29,12 @@ public:
 
 private:
     uint16_t port_;
-    std::string backend_addr_;
+    
+    std::unique_ptr<lb::LoadBalancer> load_balancer_;
+    std::unique_ptr<lb::HealthChecker> health_checker_;
+    std::unique_ptr<ratelimit::RateLimiter> rate_limiter_;
     std::unique_ptr<forwarder::Forwarder> forwarder_;
+    
     int epoll_fd_ = -1;
     int server_fd_ = -1;
     std::atomic<bool> running_{false};

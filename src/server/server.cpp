@@ -14,17 +14,33 @@
 
 namespace proxy::server {
 
-Server::Server(uint16_t port, const std::string& backend_addr)
-    : port_(port), backend_addr_(backend_addr) {
+Server::Server(uint16_t port, 
+               std::vector<std::shared_ptr<lb::Backend>> backends,
+               const std::string& strategy_name,
+               double rate_limit_rps)
+    : port_(port) {
     
-    size_t colon = backend_addr.find(':');
-    std::string host = "127.0.0.1";
-    uint16_t bport = 80;
-    if (colon != std::string::npos) {
-        host = backend_addr.substr(0, colon);
-        bport = std::stoi(backend_addr.substr(colon + 1));
+    // Initialize LB strategy
+    if (strategy_name == "wrr") {
+        load_balancer_ = std::make_unique<lb::WeightedRoundRobinLB>(backends);
+    } else if (strategy_name == "lc") {
+        load_balancer_ = std::make_unique<lb::LeastConnectionsLB>(backends);
+    } else if (strategy_name == "iphash") {
+        load_balancer_ = std::make_unique<lb::IPHashLB>(backends);
+    } else {
+        load_balancer_ = std::make_unique<lb::RoundRobinLB>(backends);
     }
-    forwarder_ = std::make_unique<forwarder::Forwarder>(host, bport);
+
+    // Rate Limiter: global limit, and a strict per-IP limit
+    rate_limiter_ = std::make_unique<ratelimit::RateLimiter>(
+        rate_limit_rps * 10, rate_limit_rps,   // Global bucket
+        rate_limit_rps, rate_limit_rps         // Per-IP bucket
+    );
+
+    // Health Checker: checks every 5 seconds, max 3 failures
+    health_checker_ = std::make_unique<lb::HealthChecker>(backends, std::chrono::seconds(5), 3);
+
+    forwarder_ = std::make_unique<forwarder::Forwarder>();
 }
 
 Server::~Server() {
@@ -76,6 +92,9 @@ void Server::run() {
     running_ = true;
     logging::Logger::get_instance().log_info("Server started on port " + std::to_string(port_));
 
+    // Start background health checking
+    health_checker_->start();
+
     const int MAX_EVENTS = 64;
     struct epoll_event events[MAX_EVENTS];
 
@@ -106,6 +125,7 @@ void Server::run() {
         }
     }
 
+    health_checker_->stop();
     close(server_fd_);
     close(epoll_fd_);
 }
@@ -172,8 +192,20 @@ void Server::handle_read(int fd) {
     auto parse_result = http::HttpParser::parse_request(conn.read_buffer);
     if (parse_result.state == http::HttpParser::ParseState::COMPLETE) {
         conn.state = ConnectionState::FORWARDING;
-        auto response = forwarder_->forward(*parse_result.request, conn.client_ip);
-        conn.write_buffer = http::HttpParser::serialize_response(response);
+        
+        // 1. Check Rate Limiter
+        if (!rate_limiter_->allow_request(conn.client_ip)) {
+            http::HttpResponse resp{429, "Too Many Requests", "HTTP/1.1", {{"Connection", "close"}}, "Rate limit exceeded"};
+            conn.write_buffer = http::HttpParser::serialize_response(resp);
+        } else {
+            // 2. Select Backend
+            auto backend = load_balancer_->get_next(conn.client_ip);
+            
+            // 3. Forward
+            auto response = forwarder_->forward(*parse_result.request, backend, conn.client_ip);
+            conn.write_buffer = http::HttpParser::serialize_response(response);
+        }
+
         conn.state = ConnectionState::WRITING_RESPONSE;
         
         struct epoll_event ev{};
@@ -205,6 +237,8 @@ void Server::handle_write(int fd) {
     }
 
     if (conn.write_offset == conn.write_buffer.size()) {
+        // Keep-alive parsing for client connection would go here, 
+        // for simplicity of the proxy we close the connection when done writing.
         close_connection(fd);
     }
 }

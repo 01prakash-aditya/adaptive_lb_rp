@@ -88,7 +88,8 @@ using namespace proxy::forwarder;
 // Test Case 1: Forward a GET / request and verify response has status 200
 // ============================================================================
 TEST(test_forward_get_root) {
-    Forwarder fwd(DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT);
+    Forwarder fwd;
+    auto backend = std::make_shared<proxy::lb::Backend>("backend-1", DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT);
 
     HttpRequest req;
     req.method = "GET";
@@ -99,7 +100,7 @@ TEST(test_forward_get_root) {
     req.headers["Accept"] = "*/*";
     req.headers["Connection"] = "close";
 
-    HttpResponse resp = fwd.forward(req);
+    HttpResponse resp = fwd.forward(req, backend, "127.0.0.1");
 
     assert(resp.status_code == 200);
     assert(resp.version == "HTTP/1.1");
@@ -110,7 +111,8 @@ TEST(test_forward_get_root) {
 // Test Case 2: Forward a POST /echo with body and verify echoed response
 // ============================================================================
 TEST(test_forward_post_echo) {
-    Forwarder fwd(DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT);
+    Forwarder fwd;
+    auto backend = std::make_shared<proxy::lb::Backend>("backend-1", DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT);
 
     const std::string echo_payload = "{\"event\": \"proxy_integration_test\", \"data\": \"hello_echo\"}";
 
@@ -124,7 +126,7 @@ TEST(test_forward_post_echo) {
     req.headers["Connection"] = "close";
     req.body = echo_payload;
 
-    HttpResponse resp = fwd.forward(req);
+    HttpResponse resp = fwd.forward(req, backend, "127.0.0.1");
 
     assert(resp.status_code == 200);
     // Verify backend echoed back the body content
@@ -135,7 +137,8 @@ TEST(test_forward_post_echo) {
 // Test Case 3: Verify X-Request-ID header is added in forwarded request
 // ============================================================================
 TEST(test_verify_x_request_id_header) {
-    Forwarder fwd(DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT);
+    Forwarder fwd;
+    auto backend = std::make_shared<proxy::lb::Backend>("backend-1", DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT);
 
     const std::string custom_request_id = "trace-req-uuid-550e8400-e29b";
     HttpRequest req;
@@ -145,12 +148,8 @@ TEST(test_verify_x_request_id_header) {
     req.headers["Host"] = "localhost:9001";
     req.request_id = custom_request_id;
 
-    HttpResponse resp = fwd.forward(req);
+    HttpResponse resp = fwd.forward(req, backend, "127.0.0.1");
     assert(resp.status_code == 200);
-
-    // The forwarder should have set X-Request-ID on the outgoing request
-    // If backend echoes headers, we can verify it here
-    // At minimum, the forward should not crash with custom IDs
 }
 
 // ============================================================================
@@ -161,7 +160,8 @@ TEST(test_verify_structured_log_output) {
     {
         StdoutCapture capture;
 
-        Forwarder fwd(DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT);
+        Forwarder fwd;
+        auto backend = std::make_shared<proxy::lb::Backend>("backend-1", DEFAULT_BACKEND_HOST, DEFAULT_BACKEND_PORT);
         HttpRequest req;
         req.method = "GET";
         req.uri = "/api/v1/metrics";
@@ -170,16 +170,14 @@ TEST(test_verify_structured_log_output) {
         req.request_id = "log-validation-trace-42";
 
         try {
-            HttpResponse resp = fwd.forward(req);
+            HttpResponse resp = fwd.forward(req, backend, "127.0.0.1");
             (void)resp;
         } catch (...) {
-            // Logging may still occur before/during exception
         }
 
         captured_log = capture.get_captured_output();
     }
 
-    // Verify structured logging information in captured stdout stream
     if (!captured_log.empty()) {
         bool contains_log_markers = (captured_log.find("GET") != std::string::npos ||
                                      captured_log.find("/api/v1/metrics") != std::string::npos ||
@@ -195,7 +193,8 @@ TEST(test_verify_structured_log_output) {
 // ============================================================================
 TEST(test_connection_invalid_backend_graceful) {
     constexpr uint16_t INVALID_PORT = 59999;
-    Forwarder bad_fwd("127.0.0.1", INVALID_PORT);
+    Forwarder bad_fwd;
+    auto bad_backend = std::make_shared<proxy::lb::Backend>("backend-bad", "127.0.0.1", INVALID_PORT);
 
     HttpRequest req;
     req.method = "GET";
@@ -207,8 +206,7 @@ TEST(test_connection_invalid_backend_graceful) {
     bool handled_gracefully = false;
 
     try {
-        HttpResponse resp = bad_fwd.forward(req);
-        // Reverse proxies typically return 502 Bad Gateway or 504 Gateway Timeout
+        HttpResponse resp = bad_fwd.forward(req, bad_backend, "127.0.0.1");
         if (resp.status_code >= 500) {
             handled_gracefully = true;
         }

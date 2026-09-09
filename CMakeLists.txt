@@ -14,6 +14,9 @@ add_executable(proxy
     src/proxy/forwarder.cpp
     src/server/server.cpp
     src/logging/logger.cpp
+    src/lb/strategies.cpp
+    src/lb/health_checker.cpp
+    src/ratelimit/rate_limiter.cpp
 )
 
 # --- Unit tests (HTTP parser only, no network) ---
@@ -32,6 +35,9 @@ add_executable(test_integration
     src/http/parser.cpp
     src/proxy/forwarder.cpp
     src/logging/logger.cpp
+    src/lb/strategies.cpp
+    src/lb/health_checker.cpp
+    src/ratelimit/rate_limiter.cpp
 )
 target_include_directories(test_integration PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME test_integration COMMAND test_integration)

@@ -1,22 +1,21 @@
 #pragma once
 #include <string>
+#include <memory>
 #include "../http/request.hpp"
 #include "../http/response.hpp"
+#include "../lb/backend.hpp"
 
 namespace proxy::forwarder {
 
 class Forwarder {
 public:
-    Forwarder(std::string backend_host, uint16_t backend_port);
-
+    Forwarder() = default;
+    
     Forwarder(const Forwarder&) = delete;
     Forwarder& operator=(const Forwarder&) = delete;
 
-    http::HttpResponse forward(http::HttpRequest req, const std::string& client_ip = "");
-
-private:
-    std::string backend_host_;
-    uint16_t backend_port_;
+    // Forwards the request to the specified backend. Returns the HttpResponse.
+    http::HttpResponse forward(http::HttpRequest req, std::shared_ptr<proxy::lb::Backend> backend, const std::string& client_ip = "");
 };
 
 }

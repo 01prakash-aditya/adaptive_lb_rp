@@ -29,7 +29,7 @@ COPY . .
 
 # Configure and compile project in Release mode
 RUN cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -G Ninja && \
-    cmake --build build --config Release
+    cmake --build build --config Release -j 2
 
 # Locate the compiled proxy binary and stage it
 RUN cp /app/build/proxy /app/proxy_bin
@@ -57,5 +57,5 @@ RUN chmod +x /app/proxy
 # Expose reverse proxy listening port
 EXPOSE 8080
 
-# Default execution command: listen on 8080 and forward to backend-1:9001
-CMD ["/app/proxy", "--port", "8080", "--backend", "backend-1:9001"]
+# Default execution command: listen on 8080 and forward to the backend pool
+CMD ["/app/proxy", "--port", "8080", "--backends", "backend-1:9001:1,backend-2:9001:1,backend-3:9001:1", "--strategy", "rr"]
