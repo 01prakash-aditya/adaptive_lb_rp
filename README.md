@@ -69,7 +69,8 @@ graph TD
 
 The project includes a fully configured monitoring stack. Prometheus scrapes the proxy's internal C++ metrics registry every 5 seconds, and Grafana visualizes the data in real-time.
 
-![Grafana Dashboard](assets/grafana_dashboard.png)
+<img width="1917" height="902" alt="image" src="https://github.com/user-attachments/assets/95b375b7-be1b-4a70-a76e-4cf712604c0d" />
+
 
 ## Technology Stack
 
