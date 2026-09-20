@@ -7,7 +7,7 @@ A systems-level, high-performance reverse proxy and load balancer written from s
 ## Architecture
 
 ```mermaid
-graph LR
+graph TD
     Client([Client]) -->|HTTP Request :8080| Proxy
 
     subgraph High-Performance Proxy Core [C++20 / Linux]
@@ -15,17 +15,27 @@ graph LR
         Epoll[Epoll Event Loop]
         RateLimiter[Token Bucket Rate Limiter]
         Parser[Custom HTTP/1.1 Parser]
+        Cache{LRU Cache}
         LB[Load Balancer]
         Health[Active Health Checker]
         Forwarder[TCP Forwarder & Conn Pool]
-        Logger[Structured JSON Logger]
+        Metrics[Metrics & Logging Registry]
 
         Epoll --> RateLimiter
         RateLimiter -->|Pass| Parser
-        Parser --> LB
+        Parser --> Cache
+        Cache -->|Miss| LB
+        Cache -.->|Hit| Epoll
         LB --> Forwarder
-        Forwarder --> Logger
-        Health -.->|Pings| LB
+        Forwarder --> Metrics
+        Health -.->|Status Updates| LB
+    end
+
+    subgraph Observability Stack
+        Prometheus[(Prometheus)]
+        Grafana[Grafana Dashboard]
+        Prometheus -.->|Scrapes /metrics| Metrics
+        Grafana -.->|Queries| Prometheus
     end
 
     Forwarder -->|Keep-Alive| B1(Backend 1)
@@ -51,9 +61,15 @@ graph LR
 * **Connection Pooling**: Drastically reduces latency by caching and reusing idle Keep-Alive TCP sockets instead of initiating a 3-way handshake on every request.
 * **Observability & Metrics Stack**: 
   * Structured JSON logging (injects `X-Request-ID` and `X-Forwarded-For`).
-  * Lock-free `std::atomic` C++ metrics registry.
+  * Lock-free `std::atomic` C++ metrics registry tracking `requests_total`, `cache_hits`, `active_connections`, and `429s`.
   * Native `/metrics` endpoint serving Prometheus-compatible exposition format.
   * Pre-provisioned Grafana dashboards tracking RPS, cache hit rates, and latency.
+
+## Observability Dashboard
+
+The project includes a fully configured monitoring stack. Prometheus scrapes the proxy's internal C++ metrics registry every 5 seconds, and Grafana visualizes the data in real-time.
+
+![Grafana Dashboard](assets/grafana_dashboard.png)
 
 ## Technology Stack
 
