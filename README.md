@@ -100,7 +100,7 @@ docker compose -f docker/docker-compose.yml run --rm load_tester --url http://pr
 ```
 *(Watch the Grafana dashboard while this runs to see the traffic spikes in real time!)*
 
-## Upcoming Features (Next Phase)
+## Further ideas:
 
 - [ ] Adaptive Load Balancing: Real-time feedback loops based on latency metrics.
 
