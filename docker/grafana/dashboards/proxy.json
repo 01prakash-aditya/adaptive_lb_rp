@@ -1,0 +1,32 @@
+{
+  "title": "Proxy Metrics",
+  "panels": [
+    {
+      "title": "Requests per Second",
+      "type": "timeseries",
+      "targets": [{"expr": "rate(proxy_requests_total[1m])"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "title": "Cache Hit Rate",
+      "type": "timeseries",
+      "targets": [{"expr": "rate(proxy_cache_hits_total[1m]) / (rate(proxy_cache_hits_total[1m]) + rate(proxy_cache_misses_total[1m]))"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "title": "Active Connections",
+      "type": "timeseries",
+      "targets": [{"expr": "proxy_active_connections"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "title": "Errors & Rate Limits",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "rate(proxy_rate_limit_exceeded_total[1m])", "legendFormat": "429s"},
+        {"expr": "rate(proxy_backend_errors_total[1m])", "legendFormat": "Backend Errors"}
+      ],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+    }
+  ]
+}

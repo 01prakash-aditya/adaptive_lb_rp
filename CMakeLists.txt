@@ -17,6 +17,8 @@ add_executable(proxy
     src/lb/strategies.cpp
     src/lb/health_checker.cpp
     src/ratelimit/rate_limiter.cpp
+    src/cache/lru_cache.cpp
+    src/metrics/registry.cpp
 )
 
 # --- Unit tests (HTTP parser only, no network) ---
@@ -38,6 +40,8 @@ add_executable(test_integration
     src/lb/strategies.cpp
     src/lb/health_checker.cpp
     src/ratelimit/rate_limiter.cpp
+    src/cache/lru_cache.cpp
+    src/metrics/registry.cpp
 )
 target_include_directories(test_integration PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME test_integration COMMAND test_integration)

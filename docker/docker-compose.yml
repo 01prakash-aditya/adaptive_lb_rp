@@ -56,6 +56,33 @@ services:
       - proxy-net
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - proxy-net
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - proxy-net
+
+  load_tester:
+    build:
+      context: ../load_tester
+    profiles:
+      - testing
+    networks:
+      - proxy-net
+
 networks:
   proxy-net:
     name: proxy-net

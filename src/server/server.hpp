@@ -10,6 +10,7 @@
 #include "../lb/strategies.hpp"
 #include "../lb/health_checker.hpp"
 #include "../ratelimit/rate_limiter.hpp"
+#include "../cache/lru_cache.hpp"
 
 namespace proxy::server {
 
@@ -34,6 +35,7 @@ private:
     std::unique_ptr<lb::HealthChecker> health_checker_;
     std::unique_ptr<ratelimit::RateLimiter> rate_limiter_;
     std::unique_ptr<forwarder::Forwarder> forwarder_;
+    std::unique_ptr<cache::LRUCache> cache_;
     
     int epoll_fd_ = -1;
     int server_fd_ = -1;

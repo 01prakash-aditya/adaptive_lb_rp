@@ -1,5 +1,7 @@
 # High-Performance Adaptive Reverse Proxy & Load Balancer
 
+[![License: MIT](https://img.shields.io/github/license/01prakash-aditya/adaptive_lb_rp)](https://github.com/01prakash-aditya/adaptive_lb_rp/blob/main/LICENSE)
+
 A systems-level, high-performance reverse proxy and load balancer written from scratch in **C++20**. Designed for high throughput and low latency, this proxy utilizes Linux's `epoll` for non-blocking, event-driven I/O and features a custom-built HTTP/1.1 parser alongside advanced traffic management capabilities.
 
 ## Architecture
@@ -45,8 +47,13 @@ graph LR
   * *Passive Monitoring*: Detects timeouts or refused connections in real-time.
   * *Zero-Downtime Failover*: Unhealthy nodes are instantly removed from the routing pool.
 * **Traffic Control (Rate Limiting)**: Thread-safe Token Bucket implementation offering both **Global** throughput caps and strict **Per-IP** request limits (returns `429 Too Many Requests`).
+* **In-Memory LRU Cache**: Intercepts repeated `GET` requests and serves them directly from RAM in <0.5ms, drastically reducing backend load. Features $O(1)$ eviction and configurable TTLs.
 * **Connection Pooling**: Drastically reduces latency by caching and reusing idle Keep-Alive TCP sockets instead of initiating a 3-way handshake on every request.
-* **Observability**: Structured JSON logging recording latency, HTTP methods, and status codes. Injects `X-Request-ID` and `X-Forwarded-For`.
+* **Observability & Metrics Stack**: 
+  * Structured JSON logging (injects `X-Request-ID` and `X-Forwarded-For`).
+  * Lock-free `std::atomic` C++ metrics registry.
+  * Native `/metrics` endpoint serving Prometheus-compatible exposition format.
+  * Pre-provisioned Grafana dashboards tracking RPS, cache hit rates, and latency.
 
 ## Technology Stack
 
@@ -55,50 +62,46 @@ graph LR
 | **Proxy Core** | C++20 (POSIX sockets, `epoll`) |
 | **Compiler / Build** | GCC 12+, CMake (3.20+), Ninja |
 | **Containerization** | Docker, Docker Compose |
-| **Testing** | Python 3 (Requests, concurrent.futures) |
+| **Observability** | Prometheus, Grafana |
+| **Testing** | Go (Load Tester), Python 3 (Validation Scripts) |
 | **Dummy Backends** | Python 3.11, Flask |
 
 ## Getting Started
 
-The entire environment (proxy + 3 backend instances) is containerized for easy testing.
+The entire environment (proxy, 3 backend instances, Prometheus, and Grafana) is containerized for easy testing.
 
 ### 1. Start the Environment
-Spin up the reverse proxy and the backend instances on a shared Docker network:
+Spin up the reverse proxy and the stack on a shared Docker network:
 ```bash
 docker compose -f docker/docker-compose.yml up --build -d
 ```
 
-### 2. Verify Traffic Routing (Distribution Test)
+### 2. View Live Metrics Dashboard
+Open your browser and navigate to the pre-provisioned Grafana dashboard:
+* **URL:** `http://localhost:3000`
+* **Credentials:** `admin` / `admin`
+
+### 3. Verify Traffic Routing (Distribution Test)
 The proxy listens on `localhost:8080`. You can automatically test the load balancing distribution using the provided Python script:
 ```bash
 python scripts/test_distribution.py http://localhost:8080/
 ```
-*(Expected: Output demonstrating traffic evenly split ~33% across all three backend containers).*
 
-### 3. Test Failover & Recovery
-Monitor how the proxy handles a backend going down in real-time:
+### 4. Test In-Memory Caching
+Run a curl command twice. The second response will bypass the backend entirely and include an `X-Cache: HIT` header:
 ```bash
-python scripts/test_failover.py http://localhost:8080/
+curl -v http://localhost:8080/
 ```
-While the script is running, open a new terminal and stop a backend (e.g., `docker stop btp-backend-2-1`). The script will log the failover recovery time.
 
-### 4. Test Rate Limiting
-Simulate a concurrent traffic burst to trigger the Token Bucket rate limiter:
+### 5. Run the High-Concurrency Load Tester
+We built a custom Go-based load tester to push the proxy to its limits and trigger the Token Bucket rate limiters. Run it via Docker:
 ```bash
-python scripts/test_rate_limit.py http://localhost:8080/
+docker compose -f docker/docker-compose.yml run --rm load_tester --url http://proxy:8080/ --concurrency 50 --duration 10
 ```
-*(Expected: A mix of `200 OK` and `429 Too Many Requests` depending on the burst size).*
-
-### 5. Inspect Observability Logs
-The proxy emits structured JSON logs. View them with:
-```bash
-docker compose -f docker/docker-compose.yml logs --tail 50 proxy
-```
+*(Watch the Grafana dashboard while this runs to see the traffic spikes in real time!)*
 
 ## Upcoming Features (Next Phase)
 
-- [ ] **In-Memory Caching**: LRU Cache layer to intercept repeated identical requests.
-- [ ] Cache invalidation and TTL tracking.
 - [ ] Adaptive Load Balancing: Real-time feedback loops based on latency metrics.
 
 ## License

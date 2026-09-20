@@ -1,6 +1,7 @@
 #include "server.hpp"
 #include "../http/parser.hpp"
 #include "../logging/logger.hpp"
+#include "../metrics/registry.hpp"
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -41,6 +42,9 @@ Server::Server(uint16_t port,
     health_checker_ = std::make_unique<lb::HealthChecker>(backends, std::chrono::seconds(5), 3);
 
     forwarder_ = std::make_unique<forwarder::Forwarder>();
+
+    // Cache: 1000 items max, 60s TTL
+    cache_ = std::make_unique<cache::LRUCache>(1000, std::chrono::seconds(60));
 }
 
 Server::~Server() {
@@ -159,6 +163,8 @@ void Server::handle_accept() {
         conn.last_activity = std::chrono::steady_clock::now();
         connections_[client_fd] = std::move(conn);
 
+        metrics::MetricsRegistry::get_instance().active_connections++;
+
         struct epoll_event ev{};
         ev.events = EPOLLIN | EPOLLET;
         ev.data.fd = client_fd;
@@ -192,18 +198,65 @@ void Server::handle_read(int fd) {
     auto parse_result = http::HttpParser::parse_request(conn.read_buffer);
     if (parse_result.state == http::HttpParser::ParseState::COMPLETE) {
         conn.state = ConnectionState::FORWARDING;
+        metrics::MetricsRegistry::get_instance().requests_total++;
         
+        // 0. Intercept /metrics for Prometheus
+        if (parse_result.request->uri == "/metrics") {
+            std::string metrics_body = metrics::MetricsRegistry::get_instance().generate_prometheus_metrics();
+            http::HttpResponse resp{200, "OK", "HTTP/1.1", 
+                {{"Content-Type", "text/plain; version=0.0.4"}, {"Connection", "close"}}, 
+                metrics_body};
+            conn.write_buffer = http::HttpParser::serialize_response(resp);
+            conn.state = ConnectionState::WRITING_RESPONSE;
+            struct epoll_event ev{};
+            ev.events = EPOLLOUT | EPOLLET;
+            ev.data.fd = fd;
+            epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+            return;
+        }
+
         // 1. Check Rate Limiter
         if (!rate_limiter_->allow_request(conn.client_ip)) {
+            metrics::MetricsRegistry::get_instance().rate_limit_exceeded_total++;
             http::HttpResponse resp{429, "Too Many Requests", "HTTP/1.1", {{"Connection", "close"}}, "Rate limit exceeded"};
             conn.write_buffer = http::HttpParser::serialize_response(resp);
         } else {
-            // 2. Select Backend
-            auto backend = load_balancer_->get_next(conn.client_ip);
+            // 2. Check LRU Cache for GET requests
+            std::string cache_key = parse_result.request->method + ":" + parse_result.request->uri;
+            std::optional<http::HttpResponse> cached_resp = std::nullopt;
             
-            // 3. Forward
-            auto response = forwarder_->forward(*parse_result.request, backend, conn.client_ip);
-            conn.write_buffer = http::HttpParser::serialize_response(response);
+            if (parse_result.request->method == "GET") {
+                cached_resp = cache_->get(cache_key);
+            }
+
+            if (cached_resp) {
+                // Cache HIT
+                metrics::MetricsRegistry::get_instance().cache_hits_total++;
+                cached_resp->headers["X-Cache"] = "HIT";
+                conn.write_buffer = http::HttpParser::serialize_response(*cached_resp);
+            } else {
+                // Cache MISS
+                metrics::MetricsRegistry::get_instance().cache_misses_total++;
+                auto backend = load_balancer_->get_next(conn.client_ip);
+                
+                try {
+                    auto response = forwarder_->forward(*parse_result.request, backend, conn.client_ip);
+                    
+                    if (response.status_code >= 500) {
+                        metrics::MetricsRegistry::get_instance().backend_errors_total++;
+                    } else if (parse_result.request->method == "GET" && response.status_code == 200) {
+                        // Insert into cache
+                        cache_->put(cache_key, response);
+                    }
+
+                    response.headers["X-Cache"] = "MISS";
+                    conn.write_buffer = http::HttpParser::serialize_response(response);
+                } catch (...) {
+                    metrics::MetricsRegistry::get_instance().backend_errors_total++;
+                    http::HttpResponse resp{502, "Bad Gateway", "HTTP/1.1", {{"Connection", "close"}}, "Backend error"};
+                    conn.write_buffer = http::HttpParser::serialize_response(resp);
+                }
+            }
         }
 
         conn.state = ConnectionState::WRITING_RESPONSE;
@@ -247,6 +300,7 @@ void Server::close_connection(int fd) {
     epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
     close(fd);
     connections_.erase(fd);
+    metrics::MetricsRegistry::get_instance().active_connections--;
 }
 
 void Server::check_timeouts() {
